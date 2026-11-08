@@ -184,18 +184,29 @@ def render_feature_input(bundle: Mapping[str, Any], feature: str) -> float | int
         if len(options) < 2:
             options = [0, 1]
         default_option = int(round(default))
+        if set(options) == {0, 1}:
+            display_options = ["No", "Yes"]
+            default_label = "Yes" if default_option == 1 else "No"
+            selected_label = st.selectbox(
+                label,
+                options=display_options,
+                index=display_options.index(default_label),
+                help="Select the option that best reflects the clinical assessment.",
+                key=f"input__{feature}",
+            )
+            # Map the English display label back to the training encoding.
+            return 1 if selected_label == "Yes" else 0
+
+        display_options = [f"Category {value}" for value in options]
         default_index = options.index(default_option) if default_option in options else 0
-        names = {0: "No", 1: "Yes"}
-        return st.selectbox(
+        selected_label = st.selectbox(
             label,
-            options=options,
+            options=display_options,
             index=default_index,
-            format_func=lambda value: names.get(
-                int(value), f"Category {int(value)}"
-            ),
             help="Select the option that best reflects the clinical assessment.",
             key=f"input__{feature}",
         )
+        return options[display_options.index(selected_label)]
 
     value, min_value, max_value, step = _numeric_metadata(meta, default)
     return st.number_input(
