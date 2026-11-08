@@ -44,7 +44,7 @@ REQUIRED_KEYS = {
 # Binary predictors used by the current model.
 FEATURE_LABELS = {
     "VNC": "Multiple vessels compressing the trigeminal nerve",
-    "Pharmacotherapy": "Favorable response to carbamazepine",
+    "Pharmacotherapy": "Ineffective carbamazepine treatment",
     "Medical_history": "Medical history value",
     "Maxillary_branch_involved": "Maxillary branch involvement",
     "Nutritional_risk": "Nutritional risk",

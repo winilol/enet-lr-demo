@@ -22,13 +22,15 @@ coefficients, development-cohort prevalence, or internal decision cutoffs.
 The current model uses:
 
 - multiple vessels compressing the trigeminal nerve;
-- favorable response to carbamazepine;
+- ineffective carbamazepine treatment;
 - medical history value;
 - maxillary branch involvement;
 - nutritional risk.
 
 Binary items are entered as **Yes/No**. Other variables use the numeric scale
-used during model development.
+used during model development. For `Pharmacotherapy`, **Yes** means that
+carbamazepine treatment is ineffective and is encoded as `1`; this is the
+higher-risk direction used by the fitted model.
 
 ## Model Bundle
 
