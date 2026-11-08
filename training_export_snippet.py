@@ -1,11 +1,12 @@
-"""追加到现有训练脚本末尾的模型导出代码。
+"""Append this code to the end of the existing model-training script.
 
-运行训练脚本时，请确保以下变量已经存在：
+The following objects must already exist:
   results, selected_feats, train_means, scaler, sel_idx,
   feature_names, y_tr, X_train_raw, final_thresholds
 
-不要直接导出循环变量 cal_platt；循环在四个模型上结束后它不再是
-ElasticNet 主模型。这里显式从 results['ElasticNet LR'] 获取对象。
+Do not export the loop variable named cal_platt. After the loop finishes, it
+refers to the last model rather than the primary ElasticNet model. The object
+is retrieved explicitly from results['ElasticNet LR'].
 """
 
 from datetime import datetime, timezone
@@ -21,15 +22,15 @@ import sklearn
 _PRIMARY_MODEL_NAME = "ElasticNet LR"
 _primary_result = results.get(_PRIMARY_MODEL_NAME)
 if _primary_result is None:
-    raise RuntimeError("results 中没有 ElasticNet LR，不能导出主模型")
+    raise RuntimeError("results does not contain the ElasticNet LR model")
 if _primary_result["chosen"]["method"] == "failed":
-    raise RuntimeError("ElasticNet LR 训练失败，未生成可导出的 Platt 模型")
+    raise RuntimeError("ElasticNet LR training failed; no Platt model to export")
 
 _expected_selected = [feature_names[index] for index in sel_idx]
 if list(selected_feats) != _expected_selected:
-    raise ValueError("selected_feats 与 sel_idx 的特征顺序不一致")
+    raise ValueError("selected_feats does not match the order in sel_idx")
 
-# 可选元数据只包含聚合统计，不包含患者级记录；用于网页输入控件范围。
+# Optional metadata contains aggregate statistics only, never patient records.
 _feature_metadata = {}
 for _feature in feature_names:
     _series = X_train_raw[_feature].dropna()
@@ -63,10 +64,10 @@ _bundle = {
     "feature_names": [str(value) for value in feature_names],
     "model_raw": _primary_result["model_raw"],
     "cal_platt": _primary_result["cal_platt"],
-    # 该阈值来自 Platt 概率尺度，网页必须对 cal_platt 的输出使用此阈值。
+    # This cutoff belongs to the Platt probability scale.
     "threshold": _threshold,
     "prevalence": float(np.mean(y_tr)),
-    # 以下为便于部署审计的可选元数据。
+    # Optional metadata for deployment and audit.
     "feature_metadata": _feature_metadata,
     "model_name": _PRIMARY_MODEL_NAME,
     "calibration_method": "sigmoid",
@@ -96,5 +97,5 @@ _summary = {
     "sklearn_version": sklearn.__version__,
     "sha256": _sha256,
 }
-print("\n模型 bundle 导出完成")
+print("\nModel bundle export completed")
 print(json.dumps(_summary, ensure_ascii=False, indent=2))

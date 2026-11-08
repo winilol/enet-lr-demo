@@ -1,11 +1,11 @@
-"""术后疼痛风险评分 Streamlit 应用。
+"""Postoperative pain risk scoring Streamlit application.
 
-推理顺序必须与训练脚本一致：
-  train_means 填充全部原始特征
+The inference order must match the training pipeline:
+  fill all raw features with train_means
   -> StandardScaler.transform
-  -> 按 sel_idx 选择特征
-  -> Platt 校准模型 predict_proba
-  -> 与 Platt 尺度 Youden 阈值比较
+  -> select features using sel_idx
+  -> Platt-calibrated predict_proba
+  -> compare with the threshold stored in the trained bundle
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ DEFAULT_MODEL_PATH = (
     / "model_export"
     / "elasticnet_platt_bundle.joblib"
 )
-# 环境变量便于本地冒烟测试；Hugging Face 部署通常不需要设置。
+# Optional local override for testing. Deployment uses the default path.
 MODEL_PATH = Path(
     os.environ.get("PAIN_SCORE_MODEL_PATH", str(DEFAULT_MODEL_PATH))
 ).expanduser().resolve()
@@ -41,13 +41,13 @@ REQUIRED_KEYS = {
     "threshold",
 }
 
-# 当前主模型中的已知二分类变量。后续若增加变量，可在这里扩展。
+# Binary predictors used by the current model.
 FEATURE_LABELS = {
-    "VNC": "VNC",
-    "Pharmacotherapy": "药物治疗",
-    "Medical_history": "病史时间（原始单位）",
-    "Maxillary_branch_involved": "上颌支受累",
-    "Nutritional_risk": "营养风险",
+    "VNC": "Multiple vessels compressing the trigeminal nerve",
+    "Pharmacotherapy": "Favorable response to carbamazepine",
+    "Medical_history": "Medical history value",
+    "Maxillary_branch_involved": "Maxillary branch involvement",
+    "Nutritional_risk": "Nutritional risk",
 }
 CATEGORICAL_FEATURES = {
     "VNC",
@@ -59,17 +59,18 @@ CATEGORICAL_FEATURES = {
 
 @st.cache_resource
 def load_bundle(path: str) -> dict[str, Any]:
-    """加载并校验模型 bundle；Streamlit 进程内只读取一次。"""
+    """Load and validate the model bundle once per Streamlit process."""
     model_path = Path(path)
     if not model_path.exists():
         raise FileNotFoundError(
-            f"未找到模型文件：{model_path}。请将训练脚本导出的 joblib 放到该路径。"
+            f"Model file not found: {model_path}. "
+            "Place the exported joblib file at this path."
         )
     artifact = joblib.load(model_path)
     if not isinstance(artifact, dict):
-        raise TypeError("模型 bundle 必须是 dict")
+        raise TypeError("The model bundle must be a dictionary.")
 
-    # 兼容当前实际 bundle 的字段名。这里只做引用别名，不改变任何模型数值。
+    # Support exported field aliases without changing any model values.
     loaded = dict(artifact)
     if "model_raw" not in loaded and "base_model" in loaded:
         loaded["model_raw"] = loaded["base_model"]
@@ -91,16 +92,16 @@ def load_bundle(path: str) -> dict[str, Any]:
 
     missing = REQUIRED_KEYS.difference(loaded)
     if missing:
-        raise KeyError(f"模型 bundle 缺少字段: {sorted(missing)}")
+        raise KeyError(f"Model bundle is missing fields: {sorted(missing)}")
     if len(loaded["feature_names"]) != len(loaded["train_means"]):
-        raise ValueError("feature_names 与 train_means 数量不一致")
+        raise ValueError("feature_names and train_means have different lengths.")
     if len(loaded["selected_feats"]) != len(loaded["sel_idx"]):
-        raise ValueError("selected_feats 与 sel_idx 数量不一致")
+        raise ValueError("selected_feats and sel_idx have different lengths.")
     expected_selected = [
         loaded["feature_names"][int(index)] for index in loaded["sel_idx"]
     ]
     if list(loaded["selected_feats"]) != expected_selected:
-        raise ValueError("selected_feats 与 sel_idx 的特征顺序不一致")
+        raise ValueError("selected_feats does not match the order in sel_idx.")
     return loaded
 
 
@@ -108,10 +109,11 @@ def predict_probability(
     bundle: Mapping[str, Any],
     user_values: Mapping[str, float | int | None],
 ) -> float:
-    """严格按照训练流程计算单例 Platt 校准概率。
+    """Calculate one Platt-calibrated probability.
 
-    number/selectbox 未提供的变量使用训练集均值。不能先取 selected_feats
-    再标准化，因为训练时的 StandardScaler 使用了全部原始特征。
+    Features not present in the form are filled with development-cohort
+    reference values. All raw features must be scaled before selecting the
+    model subset because the training StandardScaler used the full vector.
     """
     feature_names = list(bundle["feature_names"])
     means = dict(bundle["train_means"])
@@ -121,16 +123,18 @@ def predict_probability(
         if raw_value is None or pd.isna(raw_value):
             raw_value = means.get(feature)
         if raw_value is None or pd.isna(raw_value):
-            raise ValueError(f"特征 {feature} 没有输入值，且训练均值不可用")
+            raise ValueError(
+                f"No value or fallback reference is available for feature {feature}."
+            )
         row[feature] = float(raw_value)
 
-    # scaler 在训练时 fit 于全部特征，因此这里也必须按完整列序转换。
+    # The scaler was fitted on all features, so transform the complete row.
     features = pd.DataFrame([row], columns=feature_names)
     scaled = bundle["scaler"].transform(features)
     selected = scaled[:, np.asarray(bundle["sel_idx"], dtype=int)]
     probability = float(bundle["cal_platt"].predict_proba(selected)[0, 1])
     if not np.isfinite(probability) or not 0.0 <= probability <= 1.0:
-        raise ValueError(f"模型返回了无效概率: {probability}")
+        raise ValueError(f"The model returned an invalid probability: {probability}")
     return probability
 
 
@@ -169,7 +173,7 @@ def _numeric_metadata(
 
 
 def render_feature_input(bundle: Mapping[str, Any], feature: str) -> float | int:
-    """动态渲染一个特征。分类变量使用 selectbox，其他变量使用 number_input。"""
+    """Render one predictor as a select box or numeric input."""
     meta = _feature_meta(bundle, feature)
     label = FEATURE_LABELS.get(feature, feature)
     default = float(bundle["train_means"][feature])
@@ -181,14 +185,15 @@ def render_feature_input(bundle: Mapping[str, Any], feature: str) -> float | int
             options = [0, 1]
         default_option = int(round(default))
         default_index = options.index(default_option) if default_option in options else 0
-        names = {0: "否", 1: "是"}
+        names = {0: "No", 1: "Yes"}
         return st.selectbox(
             label,
             options=options,
             index=default_index,
-            format_func=lambda value: f"{value} · {names.get(int(value), '类别')}",
-            help=f"训练集默认值（均值）：{default:.3f}。"
-            "若数据编码不是 0/1，请修改 FEATURE_LABELS 与 options。",
+            format_func=lambda value: names.get(
+                int(value), f"Category {int(value)}"
+            ),
+            help="Select the option that best reflects the clinical assessment.",
             key=f"input__{feature}",
         )
 
@@ -199,68 +204,67 @@ def render_feature_input(bundle: Mapping[str, Any], feature: str) -> float | int
         min_value=min_value,
         max_value=max_value,
         step=step,
-        help=f"训练集默认值（均值）：{default:.3f}。"
-        "需要调整可接受范围时修改 bundle 的 feature_metadata 或本页代码。",
+        help="Enter the value using the same scale used for model development.",
         key=f"input__{feature}",
     )
 
 
 def main() -> None:
     st.set_page_config(
-        page_title="术后疼痛风险评分工具",
+        page_title="Postoperative Pain Risk Assessment",
         page_icon="🩺",
         layout="centered",
     )
-    st.title("术后疼痛风险评分工具（ElasticNet + Platt）")
+    st.title("Postoperative Pain Risk Assessment")
     st.caption(
-        "输入临床特征后，工具输出 Platt 校准概率，并按预设 Youden 阈值进行风险分层。"
+        "Enter the patient's clinical characteristics to estimate calibrated "
+        "postoperative pain risk."
     )
 
     try:
         bundle = load_bundle(str(MODEL_PATH))
     except Exception as exc:
-        st.error("模型文件未成功加载，无法计算风险。")
+        st.error("The model could not be loaded. Risk assessment is unavailable.")
         st.code(str(MODEL_PATH), language=None)
         st.info(
-            "请先在训练脚本末尾运行导出片段，然后把 "
-            "model_export/elasticnet_platt_bundle.joblib 放入当前项目。"
+            "Run the model export snippet and place "
+            "model_export/elasticnet_platt_bundle.joblib in the project."
         )
         st.exception(exc)
         st.stop()
 
     selected_feats = list(bundle["selected_feats"])
-    # 严格使用训练 bundle 原样导出的阈值，网页端不再二次调整。
+    # Use the exported decision cutoff exactly as stored. Do not modify it.
     threshold = float(bundle["threshold"])
-    prevalence = bundle.get("prevalence")
 
-    info_col, threshold_col, prevalence_col = st.columns(3)
-    info_col.metric("模型", "ElasticNet LR")
-    threshold_col.metric("Platt 阈值", f"{threshold:.3f}")
-    if prevalence is None:
-        prevalence_col.metric("训练阳性率", "未记录")
-    else:
-        prevalence_col.metric("训练阳性率", f"{float(prevalence):.1%}")
+    model_col, calibration_col, output_col = st.columns(3)
+    model_col.metric("Model", "ElasticNet LR")
+    calibration_col.metric("Calibration", "Platt")
+    output_col.metric("Output", "Pain risk")
 
-    with st.expander("模型说明与选用特征", expanded=True):
+    with st.expander("About this assessment", expanded=True):
         st.write(
-            "模型先进行 ElasticNet Logistic Regression 特征选择，再用 sigmoid "
-            "（Platt）校准输出概率。风险分层使用主分析在 Platt 概率尺度上得到的 "
-            "Youden 阈值；不要与 raw 或 isotonic 尺度阈值混用。"
+            "This tool estimates the probability of postoperative pain using a "
+            "parsimonious ElasticNet logistic regression model with Platt "
+            "probability calibration."
         )
-        st.markdown("**最终选用特征：** " + "、".join(selected_feats))
+        readable_features = [
+            FEATURE_LABELS.get(feature, feature) for feature in selected_feats
+        ]
+        st.markdown("**Clinical factors included:** " + "; ".join(readable_features))
         st.caption(
-            "未在当前表单中展示的原始特征会使用训练集均值填充；"
-            "标准化仍需完整特征向量，因此这些均值不是可省略的预处理步骤。"
+            "Factors not shown in the form are handled using development-"
+            "cohort reference values required by the fitted model."
         )
     with st.form("pain_risk_form"):
-        st.subheader("输入临床特征")
+        st.subheader("Clinical assessment")
         widget_columns = st.columns(2)
         user_values: dict[str, float | int] = {}
         for index, feature in enumerate(selected_feats):
             with widget_columns[index % 2]:
                 user_values[feature] = render_feature_input(bundle, feature)
         submitted = st.form_submit_button(
-            "计算风险",
+            "Calculate risk",
             type="primary",
             use_container_width=True,
         )
@@ -269,30 +273,28 @@ def main() -> None:
         try:
             probability = predict_probability(bundle, user_values)
         except Exception as exc:
-            st.error(f"计算失败：{exc}")
+            st.error(f"Calculation failed: {exc}")
         else:
             is_high_risk = probability >= threshold
             st.divider()
             result_col, risk_col = st.columns(2)
-            result_col.metric("Platt 校准概率", f"{probability:.3f}")
-            risk_col.metric("决策阈值", f"{threshold:.3f}")
-            risk_text = "高风险" if is_high_risk else "低风险"
+            result_col.metric("Calibrated risk probability", f"{probability:.3f}")
+            risk_text = "Higher-risk group" if is_high_risk else "Lower-risk group"
             if is_high_risk:
-                st.error(
-                    f"风险分层：{risk_text}（预测概率 {probability:.3f} "
-                    f"≥ 阈值 {threshold:.3f}）"
-                )
+                st.error(f"Risk classification: {risk_text}")
             else:
-                st.success(
-                    f"风险分层：{risk_text}（预测概率 {probability:.3f} "
-                    f"< 阈值 {threshold:.3f}）"
-                )
+                st.success(f"Risk classification: {risk_text}")
+            risk_col.metric("Risk group", risk_text)
 
     st.divider()
-    st.warning("本工具仅供研究参考，不能替代临床判断。")
+    st.warning(
+        "This tool is intended for research and clinical decision support only. "
+        "It does not replace professional clinical judgment."
+    )
     st.caption(
-        "请勿输入姓名、病历号、身份证号或其他可识别患者身份的信息。"
-        "阈值、校准与模型性能基于既往研究队列，外部泛化需独立验证。"
+        "Do not enter names, medical record numbers, or other identifiable "
+        "patient information. Risk estimates should be interpreted in the "
+        "context of the full clinical assessment."
     )
 
 
